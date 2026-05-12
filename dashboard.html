@@ -949,9 +949,20 @@
     function confirmAdminCancel() {
       const orderId = document.getElementById('adminCancelBookingId').value;
       if (!orderId) return;
-      db.collection("bookings").doc(orderId).update({ status: 'Cancelled', cancelledBy: 'admin' })
-        .then(() => { closeAdminCancelModal(); showToast('🗑 Booking cancelled.'); })
-        .catch(err => { closeAdminCancelModal(); alert("Failed to cancel: " + err.message); });
+      // First get the booking data so we can remove the slot lock
+      db.collection("bookings").doc(orderId).get().then(doc => {
+        const bookingData = doc.exists ? doc.data() : null;
+        return db.collection("bookings").doc(orderId).update({ status: 'Cancelled', cancelledBy: 'admin' })
+          .then(() => {
+            // Remove slot lock so the time becomes available again
+            if (bookingData && bookingData.date && bookingData.time) {
+              const lockId = `${bookingData.date}_${bookingData.time.replace(/\s+/g, '_')}`;
+              db.collection('slotLocks').doc(lockId).delete().catch(() => {});
+            }
+            closeAdminCancelModal();
+            showToast('🗑 Booking cancelled.');
+          });
+      }).catch(err => { closeAdminCancelModal(); alert("Failed to cancel: " + err.message); });
     }
 
     function closeAdminCancelModal() {

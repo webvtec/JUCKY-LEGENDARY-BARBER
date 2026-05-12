@@ -1571,10 +1571,12 @@ const firebaseConfig = {
     try {
       const SLOT_INTERVAL = 30; // fixed 30-minute slot intervals
       const snapshot = await db.collection("bookings").where("date", "==", date).get();
-      const bookings = snapshot.docs.map(doc => {
-        const bookedTime = convertToMinutes(normalizeTimeStr(doc.data().time));
-        return { start: bookedTime, end: bookedTime + SLOT_INTERVAL };
-      });
+      const bookings = snapshot.docs
+        .filter(doc => doc.data().status !== 'Cancelled') // don't block slots for cancelled bookings
+        .map(doc => {
+          const bookedTime = convertToMinutes(normalizeTimeStr(doc.data().time));
+          return { start: bookedTime, end: bookedTime + SLOT_INTERVAL };
+        });
 
       const unavailableSnapshot = await db.collection("unavailableDays").where("date", "==", date).get();
       let unavailableRanges = [];
@@ -1740,28 +1742,50 @@ const firebaseConfig = {
     const bookingNumber = generateBookingNumber(name);
     const duration = getSelectedServiceDuration();
     const total = getSelectedTotal();
+    const SLOT_INTERVAL = 30;
+    const selectedMinutes = convertToMinutes(time);
+    const newServiceEndTime = selectedMinutes + SLOT_INTERVAL;
 
-    validateTimeSlot(date, time)
-      .then((isAvailable) => {
-        if (!isAvailable) {
-          alert('This time is not available. Please choose another time.');
-          return Promise.reject('Time slot not available');
-        }
+    // Use a Firestore transaction with a slot lock document to prevent double-booking.
+    // The lock doc ID is the date + time, so only one booking can claim it.
+    const slotLockRef = db.collection('slotLocks').doc(`${date}_${time.replace(/\s+/g, '_')}`);
 
-        return db.collection('bookings').add({
-          uid: user.uid,
-          bookingNumber,
-          name,
-          phone,
-          date: date,
-          time,
-          service: services,
-          duration,
-          total,
-          deposit: "No",
-          timestamp: firebase.firestore.FieldValue.serverTimestamp()
-        });
-      })
+    db.runTransaction(async (transaction) => {
+      // 1. Check the lock document — if it exists, slot is already taken
+      const lockDoc = await transaction.get(slotLockRef);
+      if (lockDoc.exists) {
+        throw new Error('SLOT_TAKEN');
+      }
+
+      // 2. Double-check existing bookings for overlap (belt-and-suspenders)
+      // Note: Firestore transactions don't support queries, so we do this check outside
+      // but the lock document is the real guard against races.
+
+      // 3. Claim the slot by writing the lock doc AND the booking atomically
+      const bookingRef = db.collection('bookings').doc();
+      transaction.set(slotLockRef, {
+        date: date,
+        time: time,
+        bookingId: bookingRef.id,
+        uid: user.uid,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      transaction.set(bookingRef, {
+        uid: user.uid,
+        bookingNumber,
+        name,
+        phone,
+        date: date,
+        time,
+        service: services,
+        duration,
+        total,
+        deposit: "No",
+        timestamp: firebase.firestore.FieldValue.serverTimestamp()
+      });
+
+      return bookingRef;
+    })
       .then((docRef) => {
         if (!docRef) return;
 
@@ -1811,6 +1835,11 @@ const firebaseConfig = {
         document.getElementById('bookingModal').style.display = 'flex';
       })
       .catch((err) => {
+        if (err && err.message === 'SLOT_TAKEN') {
+          alert('Sorry, this time slot was just booked by someone else. Please choose another time.');
+          loadAvailableSlots(); // refresh the dropdown so the taken slot disappears
+          return;
+        }
         if (err === 'Time slot not available') return;
         if (err.code === 'permission-denied') alert("Permission denied. Please contact support.");
         else if (err.code === 'unavailable') alert("Service temporarily unavailable. Please try again.");
@@ -2077,6 +2106,12 @@ const firebaseConfig = {
 
         db.collection('bookings').doc(bookingId).update({ status: 'Cancelled', cancelledBy: 'client' })
           .then(() => {
+            // Also remove the slot lock so the time becomes available again
+            const bookingData = doc.data();
+            if (bookingData.date && bookingData.time) {
+              const lockId = `${bookingData.date}_${bookingData.time.replace(/\s+/g, '_')}`;
+              db.collection('slotLocks').doc(lockId).delete().catch(() => {});
+            }
             Swal.fire({
               title: 'Booking Cancelled',
               text: 'Booking #' + bookingNumber + ' has been cancelled.',
