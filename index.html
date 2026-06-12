@@ -477,7 +477,6 @@
     <p style="color:#e74c3c; font-weight:bold;">Tuesday: CLOSED</p>
   </div>
 
-  <a class="menu-action-btn" onclick="showUserBookings(); closeMenu();" href="javascript:void(0);">MY BOOKINGS</a>
   <a onclick="showPaymentInfo(); closeMenu();" class="menu-action-btn" href="javascript:void(0);">PAYMENT INFO</a>
   <a class="admin-button" onclick="login(); closeMenu();" style="display:block; text-align:center; margin:8px auto; padding:8px 10px; border-radius:6px; text-decoration:none; width:85%; font-weight:bold; font-size:13px;">ADMIN</a>
 
@@ -515,7 +514,6 @@
 
   <div class="separator-line"></div>
 
-  <a id="authMenuBtn" onclick="handleAuthButtonClick(); closeMenu();" style="display:block; text-align:center; margin:10px auto; padding:8px 10px; background-color:#333; color:var(--accent); border-radius:6px; cursor:pointer; text-decoration:none; width:85%; font-weight:bold; font-size:13px; border:1px solid var(--accent);">LOG IN</a>
 </div>
 
 <!-- Booking Confirmation Modal -->
@@ -523,15 +521,6 @@
   <div style="padding:20px; border-radius:12px; max-width:450px; width:90%; max-height:80vh; overflow-y:auto; box-shadow:0 4px 12px rgba(0,0,0,0.2); position:relative;">
     <h3 id="bookingModalTitle" style="margin:10px 0; color:var(--accent); text-align:center; font-family:'Bebas Neue',cursive; letter-spacing:2px;">Booking Confirmation</h3>
     <p id="bookingModalContent"></p>
-  </div>
-</div>
-
-<!-- My Bookings Modal -->
-<div id="myBookingsModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background-color:rgba(0,0,0,0.5); justify-content:center; align-items:center; z-index:10000;">
-  <div id="myBookingsBox" style="background:#fff; padding:20px; border-radius:12px; max-width:400px; width:90%; max-height:80vh; overflow-y:auto; box-shadow:0 4px 12px rgba(0,0,0,0.2); position:relative; border-top:4px solid var(--accent);">
-    <button onclick="closeMyBookings()" style="position:sticky; top:0; right:0; float:right; background:#fff; border:none; font-size:24px; cursor:pointer; z-index:10001; color:#999;">✖</button>
-    <h3 style="margin:10px 0; color:var(--primary); text-align:center; font-family:'Bebas Neue',cursive; letter-spacing:2px;">My Last 5 Bookings</h3>
-    <div id="myBookingsContent"></div>
   </div>
 </div>
 
@@ -829,8 +818,7 @@ const firebaseConfig = {
 
   firebase.auth().onAuthStateChanged(user => {
     currentUser = user || null;
-    loadReviews(currentUser);
-    updateAuthButton(user);
+    loadReviews();
   });
 
   // ========== AUTH ==========
@@ -945,7 +933,7 @@ const firebaseConfig = {
     document.getElementById(sectionId).classList.add('active');
 
     if (sectionId === 'gallerySection') loadGallery('galleryDisplay');
-    else if (sectionId === 'reviewsSection') loadReviews(currentUser);
+    else if (sectionId === 'reviewsSection') loadReviews();
   }
 
   // ========== GALLERY ==========
@@ -1710,12 +1698,6 @@ const firebaseConfig = {
   function submitBooking(event) {
     event.preventDefault();
 
-    const user = firebase.auth().currentUser;
-    if (!user) {
-      googleSignIn();
-      return;
-    }
-
     const name = document.getElementById('name').value.trim();
     const phone = document.getElementById('phone').value.trim();
     const date = document.getElementById('date').value;
@@ -1765,11 +1747,9 @@ const firebaseConfig = {
         date: date,
         time: time,
         bookingId: bookingRef.id,
-        uid: user.uid,
         createdAt: firebase.firestore.FieldValue.serverTimestamp()
       });
       transaction.set(bookingRef, {
-        uid: user.uid,
         bookingNumber,
         name,
         phone,
@@ -1887,12 +1867,6 @@ const firebaseConfig = {
   document.getElementById('reviewForm').addEventListener('submit', async (e) => {
     e.preventDefault();
 
-    const user = firebase.auth().currentUser;
-    if (!user) {
-      googleSignIn();
-      return;
-    }
-
     const name = document.getElementById('reviewName').value.trim();
     const comment = document.getElementById('reviewComment').value.trim();
     const msg = document.getElementById('reviewSubmitMsg');
@@ -1904,7 +1878,7 @@ const firebaseConfig = {
     }
 
     try {
-      await db.collection('reviews').add({ name, comment, rating: selectedRating, timestamp: firebase.firestore.FieldValue.serverTimestamp(), uid: user.uid });
+      await db.collection('reviews').add({ name, comment, rating: selectedRating, timestamp: firebase.firestore.FieldValue.serverTimestamp() });
       msg.style.color = "green";
       msg.textContent = "Thank you for your review!";
       document.getElementById('reviewForm').reset();
@@ -1938,7 +1912,7 @@ const firebaseConfig = {
     return `${diffYears} year${diffYears > 1 ? "s" : ""} ago`;
   }
 
-  function loadReviews(user) {
+  function loadReviews() {
     const container = document.getElementById('reviewsContainer');
     container.innerHTML = "<p style='text-align:center;color:#888;'>Loading reviews...</p>";
 
@@ -1956,7 +1930,6 @@ const firebaseConfig = {
 
       container.innerHTML = '';
       docs.forEach(d => {
-        const isOwner = user && d.uid === user.uid;
         const dateString = formatReviewTime(d.timestamp);
         let stars = '';
         for (let i = 1; i <= 5; i++) {
@@ -1970,7 +1943,6 @@ const firebaseConfig = {
             </div>
             <div style="margin:4px 0; font-size:18px;">${stars}</div>
             <div style="font-size:14px; color:#555; line-height:1.5;">${d.comment}</div>
-            ${isOwner ? `<button onclick="deleteReview('${d.id}')" style="color:red; cursor:pointer; background:none; border:none; font-size:13px; padding:0; margin-top:6px;">Delete</button>` : ''}
           </div>
         `;
       });
