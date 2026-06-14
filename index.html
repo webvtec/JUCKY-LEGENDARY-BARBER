@@ -818,8 +818,20 @@ const firebaseConfig = {
 
   firebase.auth().onAuthStateChanged(user => {
     currentUser = user || null;
+    // Firestore rules require request.auth != null to create bookings/reviews.
+    // Sign customers in silently & anonymously so booking works with no login friction.
+    if (!user) {
+      firebase.auth().signInAnonymously().catch(err => console.error("Anonymous sign-in failed:", err));
+    }
     loadReviews();
   });
+
+  // Resolves to a signed-in user (anonymous if none yet). Use before any Firestore write.
+  function ensureAuth() {
+    const u = firebase.auth().currentUser;
+    if (u) return Promise.resolve(u);
+    return firebase.auth().signInAnonymously().then(cred => cred.user);
+  }
 
   // ========== AUTH ==========
   // AUTHORISED ADMIN UID — set this to the Google account UID of your admin
@@ -1730,7 +1742,7 @@ const firebaseConfig = {
     // The lock doc ID is the date + time, so only one booking can claim it.
     const slotLockRef = db.collection('slotLocks').doc(`${date}_${time.replace(/\s+/g, '_')}`);
 
-    db.runTransaction(async (transaction) => {
+    ensureAuth().then((authUser) => db.runTransaction(async (transaction) => {
       // 1. Check the lock document — if it exists, slot is already taken
       const lockDoc = await transaction.get(slotLockRef);
       if (lockDoc.exists) {
@@ -1747,6 +1759,7 @@ const firebaseConfig = {
         date: date,
         time: time,
         bookingId: bookingRef.id,
+        uid: authUser.uid,
         createdAt: firebase.firestore.FieldValue.serverTimestamp()
       });
       transaction.set(bookingRef, {
@@ -1759,11 +1772,13 @@ const firebaseConfig = {
         duration,
         total,
         deposit: "No",
+        status: "Active",
+        uid: authUser.uid,
         timestamp: firebase.firestore.FieldValue.serverTimestamp()
       });
 
       return bookingRef;
-    })
+    }))
       .then((docRef) => {
         if (!docRef) return;
 
@@ -1878,7 +1893,8 @@ const firebaseConfig = {
     }
 
     try {
-      await db.collection('reviews').add({ name, comment, rating: selectedRating, timestamp: firebase.firestore.FieldValue.serverTimestamp() });
+      const authUser = await ensureAuth();
+      await db.collection('reviews').add({ name, comment, rating: selectedRating, uid: authUser.uid, timestamp: firebase.firestore.FieldValue.serverTimestamp() });
       msg.style.color = "green";
       msg.textContent = "Thank you for your review!";
       document.getElementById('reviewForm').reset();
@@ -1966,17 +1982,12 @@ const firebaseConfig = {
 
   // ========== MY BOOKINGS ==========
   function showUserBookings() {
-    const user = firebase.auth().currentUser;
-    if (!user) {
-      googleSignIn();
-      return;
-    }
-
     document.getElementById('bookingModal').style.display = 'none';
     document.getElementById('adminLoginModal').style.display = 'none';
     document.getElementById('myBookingsContent').innerHTML = '<p style="text-align:center; color:#888;">Loading your bookings...</p>';
     document.getElementById('myBookingsModal').style.display = 'flex';
 
+    ensureAuth().then((user) => {
     db.collection('bookings').where("uid", "==", user.uid).get().then(snapshot => {
       let bookings = [];
       snapshot.forEach(doc => bookings.push({ id: doc.id, ...doc.data() }));
@@ -2042,6 +2053,7 @@ const firebaseConfig = {
     });
 
     window.bookingsUnsubscribe = () => {};
+    });
   }
 
   function closeMyBookings() {
@@ -2055,7 +2067,7 @@ const firebaseConfig = {
   // ========== CANCEL USER BOOKING ==========
   function cancelUserBooking(bookingId, bookingNumber) {
     const user = firebase.auth().currentUser;
-    if (!user) { googleSignIn(); return; }
+    if (!user) { ensureAuth().then(() => cancelUserBooking(bookingId, bookingNumber)); return; }
 
     Swal.fire({
       title: 'Cancel Booking?',
